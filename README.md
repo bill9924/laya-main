@@ -1,448 +1,270 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/logo-lockup-dark.png" />
-    <img src="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/logo-lockup.png" alt="Laya" width="330" />
-  </picture>
-</p>
-
-**Multilingual, non-autoregressive System 1 decision engine.** Typed decisions over 100+ languages in a single forward pass — 33 ms — trained with reinforcement learning against strictly proper scoring rules (RLCD), with a router that picks the right checkpoint per request.
-
-<div align="center">
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/15d4Yv__KHeHjshVb-6PRTfqVllxih2S3?usp=sharing)
-[![PyPI version](https://img.shields.io/pypi/v/laya.svg)](https://pypi.org/project/laya/)
-[![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Model-convaiinnovations%2Flaya-blue)](https://huggingface.co/convaiinnovations/laya)
-[![Multilingual](https://img.shields.io/badge/%F0%9F%A4%97%20Model-laya--multilingual-blue)](https://huggingface.co/convaiinnovations/laya-multilingual)
-[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-laya--demo-orange)](https://huggingface.co/spaces/convaiinnovations/laya-demo)
-[![Dev.to Article](https://img.shields.io/badge/dev.to-Read%20Article-0A0A0A?logo=devdotto&logoColor=white)](https://dev.to/nandakishor_m_6cc0adfde9f/i-built-non-autoregressive-decision-models-a-year-ago-then-a-frontier-lab-called-it-a-18me)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-nandakishorm-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/nandakishorm)
-[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
-
-</div>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/laya_vs_jev_full.png" alt="Laya versus TypeSafe Jev: accuracy on shared public datasets, every application workflow, all 51 languages, speed, calibration, and the cost of not preloading" width="100%" />
-</p>
-
-Laya evaluates typed questions (`choice`, `score`, `noul`) over any state (text, email, ticket or JSON document) in **a single forward pass** — 33 ms for one question, 7.2 ms/question batched, measured on a T4. No text generation, so nothing to parse and nothing to hallucinate.
-
-Three checkpoints, and a `Router` that picks between them per request:
-
-| | encoder | params | context | use it for |
-|---|---|---|---|---|
-| [`laya`](https://huggingface.co/convaiinnovations/laya) | ModernBERT-large | 421M | 512 | English |
-| [`laya-multilingual`](https://huggingface.co/convaiinnovations/laya-multilingual) | mmBERT-base | 322M | 1024 | 100+ languages, 2x faster |
-| [`laya-typed-decisions`](https://huggingface.co/convaiinnovations/laya-typed-decisions) | ModernBERT-large | 421M | 1024 | the typed-decisions workflows |
+# laya-main
+Using laya (reproducing Jev) to align patents with concepts.
 
 ---
 
-## Installation
+## Overview
 
-```bash
-pip install laya
+将专利文本与 OpenAlex Concepts 进行语义对齐。整体思路：用 Jev（TypeSafe 决策式模型）替代生成式 LLM，对候选概念做判别式选择，完成专利到概念的映射。
+
+本仓库使用 **laya**（社区复现的 Jev）作为判别模型。
+
+---
+
+## Pipeline
+
+```
+Google Patent (BigQuery)
+        │
+        ▼
+  patent.json                        # title + description
+        │
+        ▼
+  TF-IDF + 余弦相似度                 # 候选集构造
+        ▲
+        │
+  openalex_concepts.jsonl            # 本地缓存的 OpenAlex Concepts（约 6.5 万条）
+        │
+        ▼
+  laya (Jev 复现) choice             # 判别式选择
+        │
+        ▼
+  jev_concept_results.json           # 最终对齐结果
 ```
 
-Python 3.10 or newer. The dependencies set that floor: `huggingface_hub` 1.x, `transformers` 5.x and `torch` 2.14 all require 3.10.
+1. 从 Google Patent（https://console.cloud.google.com/bigquery）下载专利，构造 title + description 字段，保存至 `dataset/patent.json`
+2. OpenAlex Concepts 无法直接实现 description 匹配，故将 OpenAlex 全部约 **6.5 万个** Concepts 下载到本地，保存至 `openalex_concepts_data/openalex_concepts.jsonl`
+3. 使用 **TF-IDF + 余弦相似度排序**，构造候选集
+4. 使用复现 Jev 的 **laya 模型**进行 choice
+5. 最终结果保存在 `jev_concept_data/jev_concept_results.json`
 
 ---
 
-## Quickstart: Route Mode (Recommended)
+## Directory Structure
 
-Laya ships three checkpoints. The built-in **`Router`** is the recommended entry point: it evaluates any state in any language, automatically detects scripts and languages in sub-milliseconds, and dispatches to the optimal checkpoint in a single forward pass.
+```
+laya-main/
+├── dataset/
+│   └── patent.json                     # Google Patent 下载的 title + description
+├── openalex_concepts_data/
+│   └── openalex_concepts.jsonl         # 本地缓存的 OpenAlex Concepts（约 6.5 万条）
+└── jev_concept_data/
+    └── jev_concept_results.json        # Jev 最终对齐结果
+```
 
-```python
-import laya
-from laya import Router
+---
 
-# Preload checkpoints into memory for instant sub-35ms routing
-router = Router(preload=True)
+## Data
 
-# 1. State in any language or schema
-state = {
-    "from": "user@acme.com",
-    "subject": "Duplicate charge on invoice #4411",
-    "body": "Hi, we were billed twice for March. Please refund the duplicate today or we will cancel our plan."
+### Patents
+
+- 来源：https://console.cloud.google.com/bigquery
+- 选取 **G06N** 大类
+- 网页端限制下载为 10MB，所以数据集规模为 **9183 条**消息
+
+### Concepts
+
+- OpenAlex Concepts 是已经存在的概念库，直接调用 OpenAlex API 进行检索
+- 但 OpenAlex 的 Concepts（旧体系）已经于 **2024 年被正式弃用**
+- 当前标准是 **Topics（新体系）**，topics 无法输出，是相对聚合的，代表一个研究领域，所以没有 concepts 准确
+- 因此这里仍使用**没有维护的旧体系**
+
+---
+
+## Why TF-IDF instead of API query
+
+因为使用 OpenAlex Concepts 的 API，出现了 description 构造出来的查询向量 query 无法检索出来的问题。核心在于一长串的表达，无法匹配到 concepts。
+
+于是：
+
+- 把 OpenAlex 全部约 **6.5 万个 Concepts** 原样下载到本地缓存——这仍然是真实的 OpenAlex Concepts 数据，不是自建分类体系，只是换了个获取方式。
+- 因为是一句话，没有上下文逻辑，并且客观上，title 和 description 都是作者基于文章核心观点列出来的，简洁明了，且为了快捷计算，使用 **TF-IDF**。
+- 改成对本地缓存做 **TF-IDF + 余弦相似度排序**，不再对每条专利单独打 concepts。这样每条 title + description 非空的专利都保证拿到 top_k 个候选。
+
+---
+
+## Output Format
+
+```json
+{
+  "patent_id": "JP-2026052844-A",
+  "title": "System, inference model generation method, and inference model generation program",
+  "concept": "Image synthesis",
+  "confidence": 0.0525
 }
+```
 
-# 2. Define your typed questions
-questions = {
-    "department": {
-        "type": "choice",
-        "instructions": "Which department should handle this request?",
-        "criteria": {
-            "billing": "invoices, payments, refunds",
-            "technical": "bugs, outages, system errors",
-            "sales": "pricing, new contracts",
-            "other": "everything else"
-        }
-    },
-    "urgency": {
-        "type": "score",
-        "instructions": "How urgent is this request?",
-        "criteria": ["not urgent", "soon", "critical deadline or blocking issue"]
-    },
-    "churn_risk": {
-        "type": "noul",
-        "instructions": "Does the user threaten to cancel or leave?"
-    },
-    "refund_requested": {
-        "type": "noul",
-        "instructions": "Does the user explicitly request a refund?"
-    }
+---
+
+## Performance
+
+- 先跑 100 条，时间为：**5s**，非常快
+- 跑通全部 9183 条
+
+---
+
+## Example
+
+**专利：**
+
+```json
+{
+  "title": "System, inference model generation method, and inference model generation program",
+  "description": "[Problem] To more easily generate an inference model that performs inference on a workpiece. [Solution] The system comprises an image generation unit that generates multiple workpiece images showing workpieces viewed from different viewpoints, an image synthesis unit that generates one or more virtual random stack images showing multiple randomly stacked workpieces based on the multiple workpiece images, and a learning unit that trains an inference model that infers workpiece information about one or more workpieces shown in the random stack image based on the one or more virtual random stack images. [Selected Figure] Figure 1"
 }
-
-# 3. English state -> automatically routed to laya (ModernBERT-large, 39.5 ms)
-res_en = router.predict(state, questions)
-print("Department :", res_en["answers"]["department"]["choice"])  # -> billing (confidence: 0.94)
-print("Routing    :", res_en["routing"]["model"])                 # -> english
-
-# 4. Hindi state -> automatically routed to laya-multilingual (mmBERT-base, 32.8 ms)
-res_hi = router.predict({"body": "मुझसे दो बार शुल्क लिया गया, कृपया पैसे वापस करें।"}, questions)
-print("Department :", res_hi["answers"]["department"]["choice"])  # -> billing (confidence: 0.86)
-print("Routing    :", res_hi["routing"]["model"])                 # -> multilingual
-
-# 5. Explicit override when you want a specific checkpoint
-res_td = router.predict(state, questions, model="typed-decisions")
 ```
 
-Every result carries full routing metadata explaining why the choice was made:
+**TF-IDF 候选结果（节选）：**
 
-```python
-res_hi["routing"]
-# {
-#   'model': 'multilingual',
-#   'repo': 'convaiinnovations/laya/multilingual',
-#   'reason': 'non-Latin script (devanagari, 100% of letters); the English checkpoint cannot read it'
-# }
+```json
+"candidate_concepts": [
+  {
+    "id": "https://openalex.org/C162376815",
+    "display_name": "Frequentist inference",
+    "description": "statistical inference based on frequency and proportion in sample data",
+    "level": 4,
+    "works_count": 24825,
+    "cited_by_count": 393672,
+    "wikidata": "https://www.wikidata.org/wiki/Q2158281",
+    "score": 0.284186
+  },
+  {
+    "id": "https://openalex.org/C2779793024",
+    "display_name": "Indirect Inference",
+    "description": null,
+    "level": 3,
+    "works_count": 2160,
+    "cited_by_count": 21005,
+    "wikidata": "https://www.wikidata.org/wiki/Q17299941",
+    "score": 0.27669
+  },
+  {
+    "id": "https://openalex.org/C2989087649",
+    "display_name": "Image synthesis",
+    "description": "process of generating an image from a model",
+    "level": 3,
+    "works_count": 8553,
+    "cited_by_count": 49341,
+    "wikidata": "https://www.wikidata.org/wiki/Q176953",
+    "score": 0.226465
+  }
+]
 ```
 
-Inspect a routing decision without running any forward pass:
-
-```python
-router.route({"body": "Der Kunde wurde zweimal belastet"}, questions).reason
-# "Latin script but language looks like 'de', not English"
-```
-
-### Why Route: The Evidence
-
-On a shared benchmark (17,416 questions, one T4 GPU, identical questions per model):
-
-| Benchmark / Task | English (`laya`) | Multilingual (`laya-multilingual`) | `Router` (Routed) |
-|---|---|---|---|
-| MASSIVE intent, English | **0.783** | 0.657 | **0.783** |
-| MASSIVE intent, 13 other languages | 0.306 | **0.451** | **0.451** |
-| XNLI, English | **0.860** | 0.843 | **0.860** |
-| XNLI, 14 other languages | 0.521 | **0.731** | **0.731** |
-| Languages usable (>3x random) | 23 / 51 | 45 / 51 | **45 / 51** |
-| Latency, 1 question (T4 GPU) | 39.5 ms | **32.8 ms** | **32.8 ms** |
-| Latency, 10 questions batched | 158.6 ms | **72.3 ms** | **72.3 ms** |
-
-The English checkpoint collapses on non-Latin scripts (Khmer scores **0.000 accuracy at 0.952 confidence**). Because the model stays confident while being wrong, confidence gating cannot save you. `Router` detects the script in <0.5 ms pure Python before the forward pass.
-
-### Production Preload & Memory
-
-A cold checkpoint build costs seconds; language detection costs microseconds. At the default `max_loaded=1`, traffic that alternates languages rebuilds a model on *every* request (measured at a 7.4 s median reload on CPU and 10.3 s on T4).
-
-For a server or production app, preload:
-
-```python
-# Every checkpoint resident in memory; language flips cost detection only (<1 ms)
-router = Router(preload=True)
-router = Router(preload=True, device="cuda")
-
-# Or preload only the specific checkpoints you serve:
-router.preload(["english", "multilingual"])
-
-# If your app already built an agent, attach it to avoid duplicate VRAM:
-router.attach("english", existing_agent)
-
-# Manage resident memory (default keeps 1 hot, LRU eviction)
-router = Router(max_loaded=2)       # keep two hot
-router.unload()                     # free memory
-```
-
-| Deployment Mode | Per-Request Latency | Model Reloads |
-|---|---|---|
-| `Router()` (lazy, `max_loaded=1`) | 7 to 10 s on every language switch | 1 per switch |
-| `Router(preload=True)` | **32.8 ms (GPU) / 193–464 ms (CPU)** | **none** |
-
----
-
-## Single-Model Mode (Direct SDK)
-
-If you only need a single checkpoint for a dedicated pipeline, you can load models directly:
-
-```python
-import laya
-
-# 1. Load a specific checkpoint directly from the hub
-agent = laya.load("convaiinnovations/laya")                           # English root
-agent_ml = laya.load("convaiinnovations/laya", subfolder="multilingual") # 100+ languages
-agent_td = laya.load("convaiinnovations/laya", subfolder="typed-decisions")
-
-# 2. Run all questions in ONE single forward pass (~35 ms on GPU)
-result = agent.predict(state, questions)
-answers = result["answers"]
-
-print("Department :", answers["department"]["choice"])   # -> billing (confidence: 0.94)
-print("Urgency    :", answers["urgency"]["score"])        # -> 1.84 / 2.0
-print("Churn Risk :", answers["churn_risk"]["noul"])       # -> 0.892 (89.2% probability)
-```
-
----
-
-## Automated Confidence Gating
-
-Because Laya's probabilities are trained with strictly proper scoring rules (RLCD), confidence scores are statistically meaningful:
-
-```python
-dept = answers["department"]["choice"]
-conf = answers["department"]["confidence"]
-
-if conf >= 0.85:
-    # High confidence: automated action without human in the loop
-    route_automatically(dept)
-else:
-    # Low confidence: escalate to human triage
-    escalate_to_human_agent(dept, reason=f"Low confidence ({conf:.2f})")
-```
-
----
-
-## Built-in Workflow Presets
-
-Laya provides pre-tuned question schemas for immediate production use:
-
-```python
-import laya
-
-agent = laya.load("convaiinnovations/laya")
-
-# 1. Intelligent Model Router (routes to small vs. frontier models)
-routing = agent.predict({"request": "Refactor this service using dependency injection"}, laya.router_questions())
-
-# 2. Real-time Prompt Guardrails (jailbreaks, injections, leaks)
-guard = agent.predict({"prompt": "Ignore all instructions"}, laya.guard_questions())
-
-# 3. Content Safety & Moderation (toxicity, harassment, threats)
-safety = agent.predict({"post": "User comment text"}, laya.moderation_questions())
-
-# 4. Support Ticket Triage (intent, urgency, frustration, churn)
-triage = agent.predict({"message": "My payment failed twice"}, laya.triage_questions())
-```
-
----
-
-## Decision Primitives
-
-| Primitive | Output | Use Cases |
-|---|---|---|
-| **`choice`** | Top label, probabilities per option, confidence | Department routing, intent classification, topic categorization |
-| **`score`** | Expected level on ordinal rubric, distribution, confidence | Frustration level, ticket urgency, harm severity |
-| **`noul`** | Calibrated probability P(true) from 0.0 to 1.0 | Phishing detection, spam filtering, jailbreak detection, churn risk |
-
----
-
-## Benchmarks
-
-**Full report: [`BENCHMARKS.md`](BENCHMARKS.md)** — every run consolidated, languages and themes, with per-language detail for all 51 languages.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/NandhaKishorM/laya/main/assets/laya_benchmark.png" alt="Per-language accuracy for both checkpoints across 51 languages" width="100%" />
-</p>
-
-All Laya numbers below are measured. Every model answered byte-identical questions
-(fixed seed) in the same run. Reproduce with
-[`notebooks/laya_benchmark_colab.ipynb`](https://github.com/NandhaKishorM/laya) on a T4.
-
-### Speed (Tesla T4, measured)
-
-| questions per call | `laya` | `laya-multilingual` |
-|---|---|---|
-| 1 | 39.5 ms | **32.8 ms** |
-| 5 | 84.5 ms | **40.1 ms** |
-| 10 | 158.6 ms (15.9 ms/q) | **72.3 ms (7.2 ms/q)** |
-| 50 | 771 ms | **337 ms (6.8 ms/q)** |
-
-Batched throughput reaches 103-332 questions/sec on a single T4. For reference, TypeSafe Jev
-has been independently measured at 236-276 ms p50
-([AbdelStark](https://github.com/AbdelStark/jev-benchmarks),
-[nibzard](https://github.com/nibzard/decision-model-benchmark)) -- Laya answers a single
-question roughly **6-7x faster**.
-
-### Laya (with routing) vs Jev
-
-Every Laya figure is what `Router().predict(...)` actually returns — the checkpoint the router
-selects for that input, not a hand-picked best of three. Jev figures are **third-party
-published, never measured here** (no TypeSafe API access), so sample sizes and prompts differ.
-
-| | Jev 1.13.0 | Laya (routed) | |
-|---|---|---|---|
-| typed-decisions, 2,000 decisions | 0.727 | **0.766** | +0.039 |
-| AG News, 4 labels | 0.910 | **0.950** | +0.040 |
-| DAIR Emotion, 6 labels | 0.480 | **0.595** | +0.115 |
-| Banking77 (72 vs 77 labels) | **0.870** | 0.425 | Jev leads on >20 options |
-| ECE *(lower better)* | 0.246 | **0.081** | 3× better (post-temperature) |
-| p50 latency, 1 question | 236–276 ms | **32.8 ms** | 7.8× faster |
-| Languages usable | *no published benchmark* | **45 of 51** | — |
-| Weights | closed API | **Apache 2.0** | — |
-| Cost | $0.042 / 1M tokens | **$0 self-hosted** | — |
-
-On DAIR Emotion, Jev assigned **zero probability to the true label on 16% of examples** — a hard
-failure for anything branching on confidence.
-
-#### Where Jev leads
-
-* **High-cardinality label spaces (>20 options at default settings):** On Banking77, Jev scores 0.870 (on 72 labels) while Laya scores 0.425 (on 77 labels at default 256-token head budget). This is an architectural token-budget constraint: options share a fixed `head_max_len` budget (192 tokens on English, 256 on multilingual), so 77 options receive only ~3 to 4 tokens per label, causing text to become indistinguishable. Jev supports up to 255 options out-of-the-box. While `laya-multilingual` supports 1,024 context (and up to 8,192 in the encoder) and you can raise `agent.cfg["head_max_len"] = 512` at runtime, Jev is currently better suited for 50+ options in a single prompt without tuning. `predict_shortlist` (see [Honest limits](#honest-limits)) keeps the top `k` labels with a caller-supplied embedding, then runs one forward pass on that shortlist.
-* **Soft distribution matching:** On typed-decisions, while Laya achieves higher argmax accuracy (0.766 vs 0.727), Jev achieves higher soft accuracy (0.580 vs 0.471) against the teacher's full probability distributions.
-* **Out-of-the-box raw calibration:** Before temperature scaling, the base checkpoint has higher raw ECE (0.213 vs 0.144). Laya achieves its 0.081 ECE after domain temperature fitting.
-
-Full detail, including every workflow and all 51 languages: **[`BENCHMARKS.md`](BENCHMARKS.md)**.
-
-### typed-decisions, measured on all three checkpoints
-
-400 cases, 2,000 decisions, four workflows.
-
-| model | accuracy | soft acc | Brier | ECE | score MAE |
-|---|---|---|---|---|---|
-| **`laya-typed-decisions`** | **0.766** | 0.471 | **0.062** | 0.213 | **0.242** |
-| `laya` | 0.362 | 0.332 | 0.316 | 0.175 | 0.694 |
-| `laya-multilingual` | 0.342 | 0.326 | 0.439 | 0.285 | 0.687 |
-| *Jev 1.13.0 (published)* | *0.727* | *0.580* | *0.148* | *0.144* | *0.391* |
-| *teacher self-agreement ceiling* | *0.735* | | | | |
-| *per-question majority class* | *0.461* | | | | |
-| *random guess* | *0.318* | | | | |
-
-The fine-tuned checkpoint beats Jev by 3.9 points and clears the teacher ceiling, with 2.4x
-better Brier and 1.6x better score MAE. It wins on all four workflows: invoice processing
-0.804, security incidents 0.766, customer service 0.764, agent-trace observability 0.730.
-By primitive: `noul` 0.857, `choice` 0.733, `score` 0.723.
-
-Two places it still trails Jev: **soft accuracy** (0.471 vs 0.580 — its argmax is better but
-its distributions match the teacher less well) and **ECE** (0.213 vs 0.144), which temperature
-fitting addresses.
-
-**The base checkpoints sit below the majority-class baseline** (0.362 and 0.342 against 0.461).
-All of the capability on this benchmark comes from fine-tuning.
-
-### Multilingual (51 languages, MASSIVE intent, 20 options, random = 0.050)
-
-| | `laya` | `laya-multilingual` |
-|---|---|---|
-| English | **0.783** | 0.657 |
-| 13 other languages | 0.306 | **0.451** |
-| XNLI, English | **0.860** | 0.843 |
-| XNLI, 14 other languages | 0.521 | **0.731** |
-
-Across all 51 languages the English checkpoint macro-averages **0.227** with macro ECE
-**0.733**, and only 23 of 51 languages clear 3x random. Khmer scores **0.000 at 95.2%
-confidence**. This is why [`Router`](#model-routing-three-checkpoints-one-call) exists: the
-model's own confidence gives no warning, so the routing decision has to be made before the
-forward pass.
-
-### English tasks
-
-| task | `laya` | `laya-multilingual` | note |
-|---|---|---|---|
-| AG News | **0.947** | 0.937 | in training mix |
-| BoolQ | **0.830** | 0.787 | in training mix |
-| DAIR Emotion | **0.573** | 0.513 | held out |
-| prompt-injections | **0.698** | 0.578 | held out, n=116 |
-| SST-5 (ordinal) | 0.372 | 0.282 | held out |
-
-### Calibration
-
-Both checkpoints are over-confident as shipped. Refitting one temperature per (question type,
-option count) on held-out data moves mean ECE **0.466 -> 0.081** (`laya`) and
-**0.314 -> 0.106** (`laya-multilingual`). `laya-multilingual` ships with no fitted
-temperatures at all, so fit them before relying on its probabilities.
-
-### Honest limits
-
-* **The base checkpoints are near chance on typed-decisions zero-shot** -- 0.362 and 0.352
-  against a 0.318 random baseline and a 0.461 majority-class baseline. The 0.766 figure comes
-  from the checkpoint fine-tuned on that benchmark's own training split. Laya is a fast base to
-  specialise, not a zero-shot decision engine.
-* **High-cardinality choice questions and token budgets:** Sequences split into an option prompt budget (`head_max_len`) and the remaining document/state budget (`max_len - head_max_len`):
-  * `laya` (English) defaults to 512 context (`head_max_len = 192`, ~320 tokens for state).
-  * `laya-multilingual` and `laya-typed-decisions` default to 1,024 context (`head_max_len = 256`, ~768 tokens for state; mmBERT-base encoder supports up to 8,192 with RoPE).
-  At default settings, a 77-option question like Banking77 allocates only `(256 - 16) // 77` ≈ 3–4 tokens per label, which causes accuracy to fall off sharply (0.425 vs Jev's 0.870). If evaluating 50+ options in a single question:
-  1. Raise `agent.cfg["head_max_len"] = 512` and `agent.cfg["max_len"] = 1024` (or up to 2048 / 4096 / 8192) so every option has enough tokens to remain distinct.
-  2. Or shortlist with embeddings and run one forward pass on the top `k` labels (`predict_shortlist`, example below). `predict` and `system_one` still score every criterion they are given.
-  3. Or split the label set yourself into a coarse question and a fine question.
-
-```python
-import laya
-
-questions = {
-    "intent": {
-        "type": "choice",
-        "instructions": "Which banking intent is this?",
-        "criteria": {
-            "card_arrival": "where is my card",
-            "transfer_fee": "fee charged on a transfer",
-            # ...the rest of a large label set
-        },
-    }
+**Jev 最终选择：**
+
+```json
+{
+  "patent_id": "JP-2026052844-A",
+  "title": "System, inference model generation method, and inference model generation program",
+  "concept": "Image synthesis",
+  "confidence": 0.0525
 }
-result = laya.predict_shortlist(
-    agent,
-    {"text": "I was charged twice for a transfer"},
-    questions,
-    embed_fn=laya.embed_fn_from_agent(agent),  # or any callable: texts -> (n, dim)
-    k=20,
-)
-result["shortlist"]["intent"]["labels"]  # the top 20 labels sent to the model
 ```
 
-`embed_fn(texts)` returns one vector per string. `embed_fn_from_agent` mean-pools the encoder already loaded on the agent; the decision head runs in the following `predict` / `system_one` call. Probabilities on a shortlisted choice are over those `k` labels. When `k` is at least the number of labels, the original question is passed through and `embed_fn` is not called.
-
-[Issue #102](https://github.com/NandhaKishorM/laya/issues/102) reports that a top-20 zero-shot shortlist moved a BANKING77 run from 54.3% to 60.8% on the reporter's setup. Those figures are the reporter's; this repository has not remeasured them.
-
-* Ordinal `score` questions are the weakest primitive (SST-5 0.372).
-* `laya` collapses outside English; `laya-multilingual` is weaker on English. Route, or pick
-  deliberately.
+Jev 认为判断更加准确，没有根据 TF-IDF 哪个分更好去选择，且速度很快。
 
 ---
 
-## Live Demo & Resources
+## Background: Jev / TypeSafe
 
-* **Hugging Face Model:** [convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya)
-* **Interactive Web Demo:** [convaiinnovations/laya-demo](https://huggingface.co/spaces/convaiinnovations/laya-demo)
-* **Engineering Writeup:** [Read the full story on Dev.to](https://dev.to/nandakishor_m_6cc0adfde9f/i-built-non-autoregressive-decision-models-a-year-ago-then-a-frontier-lab-called-it-a-18me)
+### 决策式 vs 生成式
+
+TypeSafe 不再像 LLM 那样是生成式的，而是 **Jev 是"决策式"的**，直接输出结构化的答案 + 概率。
+
+Benchmark 条件：Same 27 questions. Same order. 27 QUESTIONS • ONE REQUEST EACH • STARTED TOGETHER
+
+### 回答任务类型
+
+| 类型 | 示例 | 输出含义 |
+| --- | --- | --- |
+| 是否问题 | `Q: Revenue currently impacted?` | `{ "noul": 0.85, "type": "noul" }`，noul 为 0~1 的数，表示答案为"是"的概率 |
+| 选择问题 | `Q: Which incident scope?` | `{ "choice": "single_account", "confidence": 0.75 }`，即分类问题 |
+| 数值等级问题 | `Q: Churn likelihood level?` | `{ "score": 1.6, "confidence": 0.6 }`，客户流失可能性等级为 1.6 |
+
+### 使用方式
+
+- Jev 做决策的先决条件是：**你得先给它"可判断的范围"**
+- Jev 擅长的是：在已有信息和候选里，帮你做判断；**不适合凭空替你想出所有可能答案**
+
+### 官方宣传优点
+
+- Jev 产生类型决策，更像代码：可靠、快速、自洽且类型安全
+- 每一个 Jev 决策都附带信心估计，软件可以在信心高时采取行动，信心低时升级
+- 不取悦人
+- cost 少
+- 擅长常识判断：内容分类、评分响应、评估信息，以及路由请求
+- 新的 Workflow Evals：固定锁死一套流程，采用最聪明的两个模型答案当作参考答案
+
+### 双系统定位
+
+官方借用认知科学的"双系统"概念：
+
+- **System 2**：昂贵的前沿大模型，负责慢速的深度推演
+- **System 1**：Jev，充当快速廉价的反射弧
+
+在需要做前置过滤或路由分流时，用小判别模型就能搞定，不需要让生成模型全程陪跑。
+
+### 已知局限
+
+- **缺少思维链**：单步前向推导无法完成多层因果逻辑推理。在钓鱼邮件基准测试 `anisselbd/jev-phishing-bench` 中，面对包含多层转折与伪造身份的诱骗邮件，支持思维链推理的 Claude Haiku 判定准确率明显优于 Jev。
+- 当参考依据放在候选项之后时，正确率维持在较高水平。
+- 这些局限的共同根源在于**单步前向计算的固定容量**。单个前向网络只能在固定深度的矩阵变换中处理特征。
 
 ---
 
-## Fine-Tuning
+## Reproducing Jev: Open-source Implementations
 
-Fine-tune Laya on your own domain data. The notebook runs on Kaggle's free 2xT4 GPUs and does
-the whole loop: build the dataset, train with RLCD (proper-scoring-rule rewards, GRPO-style
-policy gradient), fit calibration temperatures, evaluate, and push the result to the Hub.
+Jev 目前尚未完全开源，但结合官方技术报告与开源社区的逆向复现，实现路径大致有两条。开源社区在发布两小时内就跑通了两条复现路径，都不需要重写注意力机制，直接在开源小模型上就能运行。
 
-* **[`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)**
+### 路径一：把生成模型"截断"在生成之前
 
-Fine-tuning is where most of the value is. On the typed-decisions benchmark the base
-checkpoints score near chance zero-shot (0.36 and 0.35 against a 0.318 random baseline),
-while the fine-tuned checkpoint reaches **0.766** on the same 2,000 decisions -- above
-TypeSafe Jev's published 0.727 and above the 0.735 teacher self-agreement ceiling. Treat Laya
-as a fast base to specialise, not as a zero-shot decision engine.
+拿一个已经训练好的 LLM，把它原本就会产生的"下一 Token 概率分布"拿出来使用。
 
-Runtime on 2xT4 is roughly 4-5 hours for 4 epochs over ~30k questions.
+- **Logits 投影**——直接从 LLM 的"下一词预测"里拿分。模型跑完一次，最后会输出一堆"下一个词的概率分数"（logits）。只看候选答案对应的那几个词的分数，然后做 Softmax 归一化，得到置信度。
+
+### 路径二：把模型设计成分类器
+
+把上下文当作"前提"，候选动作当作"假设"，让模型判断"前提能不能推出假设"。
+
+- 加一个分类头，大模型负责提取特征，分类头负责把特征变成类别
+- 不再使用 LM Head（用来预测下一个 Token）进行 Token 生成，而是在 Transformer 的隐藏表示上接一个 Classification Head，通过训练直接把 transformer 算出来的向量，变成三维的：蕴含、矛盾、中立
+
+### 已有复现的开源模型
+
+| 序号 | 链接 | 路径 |
+| --- | --- | --- |
+| 1 | https://github.com/featherless-ai/simple-jev | 第一条 |
+| 2 | https://github.com/Zefan-Cai/Open-Jev | 第二条变体：把上下文 + 问题 + 某个候选答案拼成一个序列，直接给 choice 的选项，noul 的是否，score 等级打分 |
+| 3 | https://github.com/TianyuCodings/NanoJev | 第二条：针对迷宫游戏，对候选路径打分/编码 |
+| 4 | https://github.com/GPT-AGI/OpenJev | 第一条：One forward pass. Logits are read at the answer position and softmaxed over your labels only. Nothing outside the option set can win. No decoding loop. |
+| 5 | https://github.com/Yinsongxu/LLM2Jev | 第一条：在 prefill 阶段读取 logits 计算概率并直接组装结果，9月22日支持多模态 |
+| 6 | https://huggingface.co/v6543210/openJev-1.5B | 第一条 |
+| 7 | https://github.com/rupeshpoojary9/poorjev | — |
+| 8 | https://github.com/Shalimov04/open-jev | 蒸馏模型，teacher 直接拿 LLM 输出的 logits，student 推理时完全不碰 teacher 的 logits，也不调用 teacher |
+| 9 | https://github.com/AppitStudio/awesome-jev | — |
+| 10 | https://github.com/AbdelStark/awesome-typesafe-jev | — |
+| 11 | https://github.com/ekzhang/openjev-sglang | — |
+| 12 | https://github.com/wfzyx/von | — |
+| 13 | https://github.com/vinnylarouge/jevlike | — |
+| 14 | https://github.com/jaredpalmer/kev | 3.6k⭐ |
+| 15 | https://github.com/TianyuCodings/NanoJev | 2k⭐ |
+| 16 | https://github.com/NandhaKishorM/laya | 最大竞争对手，9.22 日 15.8k⭐ |
+
+### 官方 API
+
+官方教程：https://docs.typesafe.ai/introduction/quickstart#call-it-the-api
+
+> 备注：官方 API 页面曾出现"满了，登不进去"的情况。
 
 ---
 
-## Support the Project
+## Notes on Classification Strategy
 
-If Laya helps your research or products, consider supporting independent research:
+分类存在"每一个层级都分类，会给出最可能的一个选项"的问题，但会出现**硬选**的情况，最后一定会一直到最底层。
 
-<p align="left">
-  <a href="https://www.buymeacoffee.com/nandakishorm" target="_blank">
-    <img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=nandakishorm&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy Me A Coffee" />
-  </a>
-</p>
+也就是说：OpenAlex Concepts 是一棵层级树，但**专利并不一定应该被分类到叶子节点**。
 
----
+所以需要根据专利的现有描述，判断**最多支持到哪个 Concept**。
 
-## License
-
-Apache 2.0. Developed by Convai Innovations.
+> 纠正：通过树节点剪枝操作，还是太慢了。所以最后的路线定位为上述 Pipeline。
